@@ -508,14 +508,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'error': err}, 401)
                 return
             port = FLEET.canvas_port(session) or '????'
-            msg = (
-                "printf '\\n\\033[1;36m=== dreamTerm canvas tool ===\\033[0m\\n"
-                "canvas shot               # screenshot your dev server → Dr. Rozen sees it\\n"
-                "canvas open <url>         # screenshot any URL\\n"
-                "canvas shot --chafa       # also render ANSI art in this terminal\\n"
-                "Your canvas port: {port}  (run: npx next dev --port {port} --host 0.0.0.0)\\n"
-                "\\033[0m\\n'"
-            ).format(port=port)
+            lines = [
+                "",
+                "=== dreamTerm canvas tool ===",
+                "canvas shot               # screenshot your dev server -> Dr. Rozen sees it",
+                "canvas open <url>         # screenshot any URL",
+                "canvas shot --chafa       # also render ANSI art in this terminal",
+                "Your canvas port: {}  (npx next dev --port {} --host 0.0.0.0)".format(port, port),
+                "",
+            ]
+            msg = "echo '{}'".format("\\n".join(lines))
             if MOCK:
                 self.send_json({'ok': True, 'session': session, 'mock': True})
                 return
@@ -527,6 +529,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': True, 'session': session})
             except Exception as e:
                 self.send_json({'ok': False, 'error': str(e)}, 500)
+
+        elif path.startswith('/api/canvas/') and path.endswith('/reload'):
+            # Trusted plane (agent) OR authenticated human.
+            # Agent: canvas reload → dashboard Canvas iframe refreshes.
+            session = path[len('/api/canvas/'):][:-len('/reload')].strip('/')
+            if self.is_loopback() or MOCK:
+                self._actor = "agent:" + session
+            else:
+                email, err = self.require_auth()
+                if err:
+                    self.send_json({'error': err}, 401)
+                    return
+            corr = dtlog.new_corr()
+            dtlog.emit("canvas.reload", session=session, actor=self._actor,
+                       trigger="agent" if self.is_loopback() else "human",
+                       corr_id=corr)
+            self.send_json({'ok': True, 'session': session, 'corr_id': corr})
 
         elif path == "/" or path == "/index.html":
             f = STATIC_DIR / "index.html"

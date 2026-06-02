@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""
+canvas — give your agent eyes. A single, dependency-free command that screenshots
+your canvas (or any URL) via the dreamTerm browser service and hands you a real
+PNG to look at. No Playwright, no CDP, no browser to install.
+
+Run it from inside your tmux session:
+
+  canvas shot                 screenshot YOUR canvas (your dev-server port)
+  canvas open <url>           screenshot any URL (a real browser for your agent)
+  canvas shot --chafa         also render it as ANSI art in this terminal
+  canvas shot --both          real PNG path + ANSI art
+
+Default mode is --vision: it prints the PNG path. Read that file with your normal
+image-capable tools to SEE your UI at full fidelity, then fix and shoot again.
+
+Override the session with $DREAMTERM_SESSION; override the host with $DREAMTERM_API.
+"""
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+
+API = os.environ.get("DREAMTERM_API", "http://127.0.0.1:4000")
+CHAFA = "/usr/bin/chafa"
+
+
+def current_session():
+    s = os.environ.get("DREAMTERM_SESSION")
+    if s:
+        return s
+    try:
+        out = subprocess.run(["tmux", "display-message", "-p", "#S"],
+                             capture_output=True, text=True, timeout=5)
+        s = out.stdout.strip()
+        if s:
+            return s
+    except Exception:
+        pass
+    return None
+
+
+def request_shot(session, mode, url=None):
+    params = {"sync": "1", "mode": mode}
+    if url:
+        params["url"] = url
+    qs = urllib.parse.urlencode(params)
+    full = "{}/api/screenshot/{}?{}".format(API, urllib.parse.quote(session), qs)
+    try:
+        with urllib.request.urlopen(full, timeout=60) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode())
+        except Exception:
+            return {"ok": False, "error": "HTTP {}".format(e.code)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def render_chafa(png):
+    if not os.path.exists(CHAFA):
+        print("(chafa not installed — skipping ANSI render)", file=sys.stderr)
+        return
+    try:
+        subprocess.run([CHAFA, png])  # direct to this terminal
+    except Exception as e:
+        print("(chafa failed: {})".format(e), file=sys.stderr)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+
+    cmd = args[0]
+    rest = args[1:]
+    mode = "vision"
+    if "--chafa" in rest:
+        mode = "chafa"; rest.remove("--chafa")
+    if "--both" in rest:
+        mode = "both"; rest.remove("--both")
+    if "--vision" in rest:
+        mode = "vision"; rest.remove("--vision")
+
+    session = current_session()
+    if not session:
+        print("ERROR: can't determine session. Run inside tmux, or set "
+              "$DREAMTERM_SESSION.", file=sys.stderr)
+        return 2
+
+    if cmd == "reload":
+        # Signal the dashboard to reload this session's Canvas iframe.
+        full = "{}/api/canvas/{}/reload".format(API, urllib.parse.quote(session))
+        try:
+            with urllib.request.urlopen(full, timeout=10) as r:
+                res = json.loads(r.read().decode())
+            if res.get("ok"):
+                print("canvas reloaded  corr={}".format(res.get("corr_id", "")))
+                return 0
+            else:
+                print("reload failed: {}".format(res.get("error")), file=sys.stderr)
+                return 1
+        except Exception as e:
+            print("reload error: {}".format(e), file=sys.stderr)
+            return 1
+
+    url = None
+    if cmd == "open":
+        if not rest:
+            print("usage: canvas open <url>", file=sys.stderr)
+            return 2
+        url = rest[0]
+    elif cmd != "shot":
+        print("unknown command: {} (use 'shot', 'open', or 'reload')".format(cmd), file=sys.stderr)
+        return 2
+
+    res = request_shot(session, mode, url)
+    if not res.get("ok"):
+        print("✗ screenshot failed: {}".format(res.get("error", "unknown")),
+              file=sys.stderr)
+        return 1
+
+    png = res.get("png")
+    print(png)  # PNG path on stdout — the agent Reads this file to SEE its UI
+    if mode in ("chafa", "both") and png:
+        render_chafa(png)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

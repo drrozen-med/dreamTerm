@@ -197,19 +197,6 @@
   <div id="body">
     <div id="sidebar">
       
-    <div id="canvas-panel">
-      <div class="panel-title">&#128203; Canvas Setup &mdash; click to copy command, then paste in terminal</div>
-      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8081 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
-      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8082 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
-      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8083 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
-      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8084 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
-      <div class="canvas-item"><span class="chip" style="background:#0891b2">PI</span><pre onclick="copyCmd(this)">npx next dev --port 8085 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
-      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8086 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
-      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8087 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
-      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8088 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
-      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8089 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
-    </div>
-
     <div class="section-label">Sessions <span id="sidebar-count"></span></div>
       <div id="session-list"></div>
     </div>
@@ -220,7 +207,7 @@
           <span class="panel-badge" id="terminal-session-badge"></span>
           <div class="panel-actions">
             <button class="panel-btn" id="inject-btn" onclick="injectCanvas()" title="Send canvas tool instructions to this agent">📋 Canvas tool</button>
-            <button class="panel-btn" onclick="openNewTab('terminal')">↗ New tab</button><button class="panel-btn canvas-enable-btn" id="canvas-enable-btn" onclick="injectCanvasPrompt()" title="Send canvas instructions to this agent">🎨 Enable Canvas</button>
+            <button class="panel-btn" onclick="openNewTab('terminal')">↗ New tab</button>
           </div>
         </div>
         <div class="frame-wrap" id="terminal-wrap">
@@ -859,16 +846,34 @@ function renderEvent(d) {
 
 async function connectSSE() {
   if (_evtSource) return;
-  const token = await getIdToken();
-  if (!token) return;
-  const url = _apiKey()
-    ? _apiUrl('/api/events/stream')
-    : '/api/events/stream?token=' + encodeURIComponent(token);
+  let url;
+  if (_apiKey()) {
+    url = _apiUrl('/api/events/stream');
+  } else {
+    const token = await getIdToken();
+    if (!token) return;
+    url = '/api/events/stream?token=' + encodeURIComponent(token);
+  }
   const es = new EventSource(url);
   _evtSource = es;
   const dot = document.getElementById('act-dot');
   es.onopen = () => { if (dot) dot.classList.add('live'); };
-  es.onmessage = (e) => { try { renderEvent(JSON.parse(e.data)); } catch (x) {} };
+  es.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      renderEvent(d);
+      // Loop 3 — live reload: if this session's canvas.reload fired, refresh the iframe.
+      if (d.event === 'canvas.reload' && d.session === activeSession) {
+        const f = document.getElementById('preview-frame');
+        if (f && f.style.display !== 'none') {
+          f.src = f.src;  // force reload
+          // pulse the canvas header to show it updated
+          const h = document.querySelector('#right-panel .panel-header');
+          if (h) { h.style.outline = '2px solid var(--green)'; setTimeout(() => h.style.outline = '', 800); }
+        }
+      }
+    } catch (x) {}
+  };
   es.onerror = () => {
     if (dot) dot.classList.remove('live');
     // EventSource auto-reconnects; just reflect state.
