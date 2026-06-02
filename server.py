@@ -652,7 +652,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self.send_error(404)
-
     def do_POST(self):
         self._t0 = time.time()
         self._actor = "anon"
@@ -697,6 +696,51 @@ class Handler(BaseHTTPRequestHandler):
             subpath = path[len("/api/canvas/"):].strip("/").split("/", 1)[-1]
             self.do_POST_canvas(subpath)
             return
+        elif path.startswith("/api/agent/") and path.endswith("/prompt"):
+            # POST /api/agent/<session>/prompt — inject canvas-use prompt into tmux
+            prefix = "/api/agent/"
+            if not self.path.startswith(prefix):
+                self.send_error(404); return
+            session = self.path[len(prefix):].rstrip("/")
+            if session.endswith("/prompt"):
+                session = session[:-len("/prompt")]
+            if not session:
+                self.send_json({"ok": False, "error": "missing session name"}, 400); return
+            if not (self.is_loopback() or MOCK):
+                email, err = self.require_auth()
+                if err: self.send_json({"error": err}, 401); return
+            port = FLEET.canvas_port(session)
+            port_str = str(port) if port else "???<see fleet.json>???"
+            lines = [
+                "",
+                "\033[1;36m╔════════════════════════════════════════════════════════╗\033[0m",
+                "\033[1;36m║  Canvas enabled for your session — Dr. Rozen is watching\033[0m",
+                "\033[1;36m╚════════════════════════════════════════════════════════╝\033[0m",
+                "",
+                "  Your Canvas: \033[1;33mhttp://localhost:" + port_str + "\033[0m  (Dr. Rozen sees this live)",
+                "",
+                "  \033[1;32mdt shot\033[0m              → see your UI as ASCII art in this terminal",
+                "  \033[1;32mdt push file.html\033[0m  → Dr. Rozen's Canvas panel shows it instantly",
+                "  \033[1;32mdt push image.png\033[0m   → Dr. Rozen sees the image",
+                "  \033[1;32mdt reload\033[0m          → refresh Canvas after pushing",
+                "",
+                "  Start dev server: \033[1;33mnpx next dev --port " + port_str + " --host 0.0.0.0\033[0m",
+                "",
+                "  Run \033[1;33mdt help\033[0m for full guide.",
+                "",
+            ]
+            try:
+                for line in lines:
+                    subprocess.run(["tmux", "send-keys", "-t", session, line], timeout=3)
+                subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], timeout=3)
+                dtlog.emit("tool.invoke", session=session, actor=self._actor, tool="inject_canvas_prompt")
+                self.send_json({"ok": True, "session": session, "port": port_str})
+            except subprocess.TimeoutExpired:
+                self.send_json({"ok": False, "error": "tmux timeout"}, 500)
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)}, 500)
+            return
+
         else:
             self.send_error(404)
 

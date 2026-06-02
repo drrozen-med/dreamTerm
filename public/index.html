@@ -161,6 +161,9 @@
   .act-event.ev-canvas{color:var(--purple);}
   .act-meta{color:var(--text);overflow:hidden;text-overflow:ellipsis;}
 
+.panel-btn.canvas-enable-btn{color:var(--blue);border-color:var(--blue);}
+  .panel-btn.canvas-enable-btn:hover{background:var(--blue);color:#fff;}
+  .panel-btn.canvas-enable-btn.injecting{opacity:0.6;cursor:not-allowed;}
 </style>
 </head>
 <body>
@@ -217,7 +220,7 @@
           <span class="panel-badge" id="terminal-session-badge"></span>
           <div class="panel-actions">
             <button class="panel-btn" id="inject-btn" onclick="injectCanvas()" title="Send canvas tool instructions to this agent">📋 Canvas tool</button>
-            <button class="panel-btn" onclick="openNewTab('terminal')">↗ New tab</button>
+            <button class="panel-btn" onclick="openNewTab('terminal')">↗ New tab</button><button class="panel-btn canvas-enable-btn" id="canvas-enable-btn" onclick="injectCanvasPrompt()" title="Send canvas instructions to this agent">🎨 Enable Canvas</button>
           </div>
         </div>
         <div class="frame-wrap" id="terminal-wrap">
@@ -277,6 +280,51 @@ if (!_KEY_MODE) {
   document.write('<scr\x69pt src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"><\/script>');
   document.write('<scr\x69pt src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"><\/script>');
 }
+
+function injectCanvasPrompt() {
+  var btn = document.getElementById("canvas-enable-btn");
+  if (!activeSession) {
+    alert("Select a session first.");
+    return;
+  }
+  btn.disabled = true;
+  btn.classList.add("injecting");
+  btn.textContent = "Injecting…";
+  var idToken = sessionStorage.getItem("idToken") || "";
+  fetch("/api/agent/" + encodeURIComponent(activeSession) + "/prompt", {
+    method: "POST",
+    headers: idToken ? { "Authorization": "Bearer " + idToken } : {}
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        btn.textContent = "✓ Canvas enabled!";
+        btn.style.color = "var(--green)";
+        btn.style.borderColor = "var(--green)";
+        setTimeout(function() {
+          btn.textContent = "🎨 Enable Canvas";
+          btn.style.color = "";
+          btn.style.borderColor = "";
+          btn.disabled = false;
+          btn.classList.remove("injecting");
+        }, 3000);
+      } else {
+        btn.textContent = "✗ Failed";
+        btn.style.color = "var(--red)";
+        setTimeout(function() {
+          btn.textContent = "🎨 Enable Canvas";
+          btn.style.color = "";
+          btn.disabled = false;
+          btn.classList.remove("injecting");
+        }, 3000);
+      }
+    })
+    .catch(function(e) {
+      btn.textContent = "✗ Error";
+      btn.disabled = false;
+      btn.classList.remove("injecting");
+    });
+}
+
 </script>
 <script>
 async function screenshotCanvas() {
@@ -298,6 +346,51 @@ async function screenshotCanvas() {
     setTimeout(() => { btn.textContent = '📸 Canvas'; btn.disabled = false; }, 3000);
   }
 }
+
+function injectCanvasPrompt() {
+  var btn = document.getElementById("canvas-enable-btn");
+  if (!activeSession) {
+    alert("Select a session first.");
+    return;
+  }
+  btn.disabled = true;
+  btn.classList.add("injecting");
+  btn.textContent = "Injecting…";
+  var idToken = sessionStorage.getItem("idToken") || "";
+  fetch("/api/agent/" + encodeURIComponent(activeSession) + "/prompt", {
+    method: "POST",
+    headers: idToken ? { "Authorization": "Bearer " + idToken } : {}
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        btn.textContent = "✓ Canvas enabled!";
+        btn.style.color = "var(--green)";
+        btn.style.borderColor = "var(--green)";
+        setTimeout(function() {
+          btn.textContent = "🎨 Enable Canvas";
+          btn.style.color = "";
+          btn.style.borderColor = "";
+          btn.disabled = false;
+          btn.classList.remove("injecting");
+        }, 3000);
+      } else {
+        btn.textContent = "✗ Failed";
+        btn.style.color = "var(--red)";
+        setTimeout(function() {
+          btn.textContent = "🎨 Enable Canvas";
+          btn.style.color = "";
+          btn.disabled = false;
+          btn.classList.remove("injecting");
+        }, 3000);
+      }
+    })
+    .catch(function(e) {
+      btn.textContent = "✗ Error";
+      btn.disabled = false;
+      btn.classList.remove("injecting");
+    });
+}
+
 </script>
 
 <script>
@@ -799,6 +892,51 @@ function copyCmd(el) {
       if (btn) { btn.textContent = 'Copy'; btn.classList.remove('copied'); }
     }, 1500);
   });
+}
+
+
+function injectCanvasPrompt() {
+  var btn = document.getElementById("canvas-enable-btn");
+  if (!activeSession) {
+    alert("Select a session first.");
+    return;
+  }
+  btn.disabled = true;
+  btn.classList.add("injecting");
+  btn.textContent = "Injecting…";
+  var idToken = sessionStorage.getItem("idToken") || "";
+  fetch("/api/agent/" + encodeURIComponent(activeSession) + "/prompt", {
+    method: "POST",
+    headers: idToken ? { "Authorization": "Bearer " + idToken } : {}
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        btn.textContent = "✓ Canvas enabled!";
+        btn.style.color = "var(--green)";
+        btn.style.borderColor = "var(--green)";
+        setTimeout(function() {
+          btn.textContent = "🎨 Enable Canvas";
+          btn.style.color = "";
+          btn.style.borderColor = "";
+          btn.disabled = false;
+          btn.classList.remove("injecting");
+        }, 3000);
+      } else {
+        btn.textContent = "✗ Failed";
+        btn.style.color = "var(--red)";
+        setTimeout(function() {
+          btn.textContent = "🎨 Enable Canvas";
+          btn.style.color = "";
+          btn.disabled = false;
+          btn.classList.remove("injecting");
+        }, 3000);
+      }
+    })
+    .catch(function(e) {
+      btn.textContent = "✗ Error";
+      btn.disabled = false;
+      btn.classList.remove("injecting");
+    });
 }
 
 </script>
