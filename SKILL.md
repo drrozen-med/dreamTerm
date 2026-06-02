@@ -86,6 +86,82 @@ python3 /root/kill_empty_sessions.py
 grep 'ttyd.*-W' /usr/local/bin/ttyd-session.sh
 ```
 
+
+## Agent Tools (dt-canvas)
+
+Every agent has a `dt` bash tool. Source it once per session:
+
+```bash
+source /home/claude-agent/agent-dashboard/tools/dt-canvas
+```
+
+### Commands
+
+| Command | What it does |
+|---------|-------------|
+| `dt shot` | Screenshot your dev server → chafa ASCII art renders in YOUR terminal |
+| `dt open <url>` | Screenshot any URL → chafa in YOUR terminal |
+| `dt push <file.html>` | Push HTML → Dr. Rozen's Canvas panel shows it instantly |
+| `dt push <file.png>` | Push image → Canvas shows it |
+| `dt reload` | Tell Dr. Rozen's dashboard to refresh the Canvas iframe |
+| `dt help` | Show full usage |
+
+### Full Lovable-mode workflow (front-end agent)
+
+```bash
+# 1. Start dev server
+npx next dev --port 8081 --host 0.0.0.0
+
+# 2. See what it looks like — chafa renders in your terminal
+dt shot
+
+# 3. Push HTML artifact (diagram, chart, anything)
+dt push my_diagram.html
+
+# 4. Signal Dr. Rozen to refresh Canvas
+dt reload
+
+# 5. Iterate: edit code → dt shot → see result → fix
+```
+
+### Canvas auto-detect
+
+`dt shot` and `dt push` auto-detect your tmux session via `tmux display -p '#S'`. No parameters needed.
+
+### Canvas port map
+
+| Session | Canvas Port |
+|---------|------------|
+| youtube | 8081 |
+| obyx_code | 8082 |
+| sleepy_sounds | 8083 |
+| yakov_gcp | 8084 |
+| hermes_daily_cherish | 8085 |
+| hermes_fb_page_admin | 8086 |
+| hermes_solids | 8087 |
+| alex_nursgebride_funnel | 8088 |
+| redit | 8089 |
+
+## Direct API (for any HTTP-capable agent)
+
+```bash
+# Screenshot → chafa in agent's tmux pane (loopback = no auth)
+curl "http://127.0.0.1:4000/api/screenshot/youtube?mode=chafa"
+
+# Screenshot self (auto-detects tmux session)
+curl "http://127.0.0.1:4000/api/screenshot/self?mode=chafa"
+
+# Push HTML artifact
+curl -X POST -H "Content-Type: text/html"   --data-binary "@/tmp/page.html"   "http://127.0.0.1:4000/api/canvas/youtube/push"
+
+# Reload Canvas iframe
+curl -X POST "http://127.0.0.1:4000/api/canvas/youtube/reload"
+
+# Get canvas as file
+curl "http://127.0.0.1:4000/api/canvas/youtube/file"
+```
+
+
 ## Agent Types
 - HERMES: `hermes` process in tmux (python3)
 - PI: `pi` process in tmux (terminal agent)

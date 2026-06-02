@@ -6,24 +6,39 @@ Serves:
   GET  /api/sessions    → tmux session list + agent detection (auth required)
   POST /api/auth/verify → verify Firebase ID token, check allowlist
 """
-import json, subprocess, os, time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import json, subprocess, os, time, queue
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-PORT = 4000
-STATIC_DIR = Path(__file__).parent / "public"
+import fleet as fleet_mod
+import dtlog
 
-# ── Allowlist ──────────────────────────────────────────────────────────────────
-ALLOWED_EMAILS = {
-    "drrozen@gmail.com",
-    "urirozen@gmail.com",
-    "dr.rozen@concise-med.com",
-}
-# Set True for quick testing (any valid Firebase token is accepted)
-ALLOW_ALL = False
+# ── Single Source of Truth (fleet.json) ─────────────────────────────────────────
+FLEET = fleet_mod.load()
+
+PORT = FLEET.dashboard_port
+STATIC_DIR = Path(__file__).resolve().parent / "public"
+
+# DREAMTERM_MOCK=1 runs the server with a fake fleet (no tmux / no Firebase),
+# so the full server + GUI can run and be browser-tested on a dev machine.
+MOCK = os.environ.get("DREAMTERM_MOCK") == "1"
+
+# ── Structured logging + event bus (docs/SSOT.md §10) ───────────────────────────
+_log_root = "/tmp/dreamterm-logs" if MOCK else FLEET.log_root
+LOG_DIR = dtlog.setup(_log_root)
+
+# ── Allowlist (from fleet.json) ─────────────────────────────────────────────────
+ALLOWED_EMAILS = FLEET.allowed_emails
+# Set True for quick testing (any valid Firebase token is accepted).
+# Always on in MOCK mode so the dashboard is reachable without Firebase.
+ALLOW_ALL = MOCK
+
+# ── API key bypass (SSOT §11 — simple personal access, no Firebase required) ────
+# Set DREAMTERM_API_KEY in the systemd environment. Never commit the key.
+API_KEY = os.environ.get("DREAMTERM_API_KEY", "")
 
 # ── Firebase Admin SDK ────────────────────────────────────────────────────────
-FIREBASE_CREDS_PATH = "/home/claude-agent/NurseBridge-prep/credentials/service_accounts/nursebridge-prep-firebase-adminsdk-fbsvc-38884db962.json"
+FIREBASE_CREDS_PATH = FLEET.firebase_creds
 
 _firebase_app = None
 
@@ -69,41 +84,8 @@ def verify_token(id_token):
         return None, "Verification failed: " + str(e)
 
 # ── tmux helpers (service runs as claude-agent) ────────────────────────────────
-PORT_MAP = {
-    "alex_nursgebride_funnel": 7681,
-    "redit":                   7682,
-    "hermes_daily_cherish":  7683,
-    "hermes_fb_page_admin":  7684,
-    "hermes_solids":        7685,
-    "youtube":               7686,
-    "obyx_code":             7687,
-    "sleepy_sounds":         7688,
-    "yakov_gcp":             7689,
-}
-PREVIEW_PORT_MAP = {
-    "alex_nursgebride_funnel":  8088,
-    "redit":                    8089,
-    "hermes_daily_cherish":     8085,
-    "hermes_fb_page_admin":     8086,
-    "hermes_solids":            8087,
-    "youtube":                  8081,
-    "obyx_code":                8082,
-    "sleepy_sounds":            8083,
-    "yakov_gcp":                8084,
-}
-
-PREVIEW_MAP = {
-    # Per-agent canvas (dev server) — agent should run: npx next dev --port XXXX
-    "alex_nursgebride_funnel":  "/preview/alex_nursgebride_funnel/",
-    "redit":                    "/preview/redit/",
-    "hermes_daily_cherish":     "/preview/hermes_daily_cherish/",
-    "hermes_fb_page_admin":     "/preview/hermes_fb_page_admin/",
-    "hermes_solids":            "/preview/hermes_solids/",
-    "youtube":                  "/preview/youtube/",
-    "obyx_code":                "/preview/obyx_code/",
-    "sleepy_sounds":            "/preview/sleepy_sounds/",
-    "yakov_gcp":                "/preview/yakov_gcp/",
-}
+# Port maps are NO LONGER hand-maintained here — they are derived from FLEET
+# (fleet.json), the single source of truth. See docs/SSOT.md §5.
 
 def _tmux(fmt):
     r = subprocess.run(
@@ -120,7 +102,36 @@ def _tmux_pane(session, fmt):
     )
     return r.stdout.strip()
 
+def _mock_sessions():
+    """Fake fleet derived from fleet.json — used by DREAMTERM_MOCK for local
+    browser testing without tmux/ps. Deterministic, no Date/random."""
+    fake_types = ["HERMES", "PI", "CODEX", "HUMAN-ET", "EMPTY"]
+    out = []
+    for i, s in enumerate(FLEET.sessions):
+        name = s["name"]
+        atype = fake_types[i % len(fake_types)]
+        out.append({
+            "name": name,
+            "attached": (i % 3 == 0),
+            "windows": 1,
+            "terminal_port": FLEET.ttyd_port(name),
+            "terminal_url": FLEET.terminal_url(name),
+            "preview_url": FLEET.preview_url(name),
+            "agent_type": atype,
+            "cpu_percent": round((i * 7.3) % 100, 1) if atype != "EMPTY" else 0.0,
+            "memory_mb": round((i * 123.4) % 2048, 1) if atype != "EMPTY" else 0.0,
+        })
+    return out
+
+
 def get_sessions():
+    _scan_t0 = time.time()
+    if MOCK:
+        out = _mock_sessions()
+        dtlog.emit("fleet.scan", n_sessions=len(out),
+                   n_agents=sum(1 for s in out if s.get("agent_type") not in (None, "EMPTY")),
+                   dur_ms=round((time.time() - _scan_t0) * 1000, 1), mock=True)
+        return out
     raw = _tmux("#{session_name}|#{session_attached}|#{session_windows}")
     sessions = []
     for line in raw.splitlines():
@@ -132,9 +143,9 @@ def get_sessions():
             "name": name,
             "attached": parts[1] == "1",
             "windows": int(parts[2]),
-            "terminal_port": PORT_MAP.get(name),
-            "terminal_url": "/terminal/{}/".format(name) if name in PORT_MAP else None,
-            "preview_url": PREVIEW_MAP.get(name),
+            "terminal_port": FLEET.ttyd_port(name),
+            "terminal_url": FLEET.terminal_url(name),
+            "preview_url": FLEET.preview_url(name),
         })
 
     for s in sessions:
@@ -193,19 +204,79 @@ def get_sessions():
         if extra.startswith("PROCESS:"): extra = "PROCESS"
         return (agent_order.get(extra, 5), -s.get("cpu_percent", 0), s["name"])
     sessions.sort(key=sort_key)
+    dtlog.emit("fleet.scan", n_sessions=len(sessions),
+               n_agents=sum(1 for s in sessions if s.get("agent_type") not in (None, "EMPTY")),
+               dur_ms=round((time.time() - _scan_t0) * 1000, 1))
     return sessions
 
 # ── HTTP Handler ───────────────────────────────────────────────────────────────
+# ── Screenshot / browser capture (shared by dashboard + agent CLI) ──────────────
+def _shots_dir(session):
+    d = Path(FLEET.canvas_root) / session / "shots"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _prune_shots(session, keep=50):
+    try:
+        shots = sorted(_shots_dir(session).glob("c_*.png"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in shots[keep:]:
+            p.unlink()
+    except Exception:
+        pass
+
+
+def capture(url, img_path, width=1280, height=800, wait_ms=1500):
+    """Screenshot a URL to img_path with the shared headless browser.
+    Returns (ok, size_bytes, error)."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": width, "height": height})
+                page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                page.wait_for_timeout(wait_ms)
+                page.screenshot(path=str(img_path), full_page=False)
+            finally:
+                browser.close()
+        size = img_path.stat().st_size if Path(img_path).exists() else 0
+        return True, size, None
+    except Exception as e:
+        return False, 0, str(e)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _query_token(self):
+        """Extract ?token=... — EventSource cannot send Authorization headers."""
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        vals = q.get("token")
+        return vals[0] if vals else ""
+
     def require_auth(self):
-        """Check Bearer token. Returns (email, None) or (None, error_str)."""
+        """Authenticate. Returns (email, None) or (None, error_str).
+        Token may come from Authorization header, ?token= (SSE), or ?key= (API key bypass).
+        MOCK mode bypasses Firebase entirely."""
+        if MOCK:
+            self._actor = "mock-user"
+            return "mock-user", None
+        # API key bypass — checked before Firebase so it works in any browser/webview
+        if API_KEY:
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            supplied = (q.get("key") or [""])[0]
+            if supplied and supplied == API_KEY:
+                self._actor = "human:api-key"
+                return "api-key-user", None
         auth = self.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return None, "Missing or invalid Authorization header"
-        id_token = auth[7:]
+        id_token = auth[7:] if auth.startswith("Bearer ") else self._query_token()
+        if not id_token:
+            return None, "Missing token"
         email, err = verify_token(id_token)
         if err:
             return None, err
@@ -213,7 +284,13 @@ class Handler(BaseHTTPRequestHandler):
             allowed = {e.lower() for e in ALLOWED_EMAILS}
             if email.lower() not in allowed and not email.startswith("offline-"):
                 return None, "Access denied: {} not in allowlist".format(email)
+        self._actor = ("agent" if self.is_loopback() else "human:" + email)
         return email, None
+
+    def is_loopback(self):
+        """True if the request originates from the local host (trusted plane)."""
+        addr = self.client_address[0] if self.client_address else ""
+        return addr in ("127.0.0.1", "::1", "localhost") or addr.startswith("127.")
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
@@ -224,6 +301,127 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
+        self._emit_http(status)
+
+    def _emit_http(self, status):
+        t0 = getattr(self, "_t0", None)
+        dur = round((time.time() - t0) * 1000, 1) if t0 else None
+        dtlog.emit("http.request", level="info",
+                   actor=getattr(self, "_actor", "anon"),
+                   method=self.command, path=self.path.split("?")[0],
+                   status=status, dur_ms=dur)
+
+    # ── SSE helpers ──────────────────────────────────────────────────────────
+    def _sse_open(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")  # disable nginx buffering
+        self.end_headers()
+
+    def _sse_send(self, obj):
+        self.wfile.write(("data: " + json.dumps(obj) + "\n\n").encode())
+        self.wfile.flush()
+
+    # ── Screenshot / browser: dual-plane (loopback agent OR authed human) ─────
+
+    def _session_from_tmux(self):
+        """Derive the tmux session name from the TMUX env var.
+        TMUX=/tmp/tmux-1000/default,169687,0 → session name via tmux display.
+        Returns None if we can't determine it."""
+        tmux_var = os.environ.get("TMUX", "")
+        if not tmux_var:
+            return None
+        # tmux display -p '#S' gives session name; -F works from any pane
+        try:
+            r = subprocess.run(
+                ["tmux", "display", "-p", "#S"],
+                capture_output=True, text=True, timeout=3,
+                env={**os.environ, "TMUX": tmux_var}
+            )
+            if r.returncode == 0:
+                return r.stdout.strip()
+        except Exception:
+            pass
+        return None
+
+    def _handle_screenshot(self, session):
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        sync = q.get("sync", ["0"])[0] == "1"
+        mode = q.get("mode", ["both"])[0]            # vision | chafa | both
+        override_url = q.get("url", [None])[0]       # arbitrary URL ("canvas open")
+
+        # Auth: agents call from loopback (no token); humans must authenticate.
+        if self.is_loopback() or MOCK:
+            self._actor = "agent:" + session
+        else:
+            email, err = self.require_auth()
+            if err:
+                self.send_json({"error": err}, 401)
+                return
+
+        corr = dtlog.new_corr()
+        if override_url:
+            target = override_url
+        else:
+            target = "http://127.0.0.1:{}".format(FLEET.canvas_port(session) or 8080)
+        dtlog.emit("screenshot.request", session=session, actor=self._actor,
+                   target=target, mode=mode, sync=sync, corr_id=corr)
+
+        if MOCK:
+            png = "/tmp/mock/{}.png".format(session)
+            dtlog.emit("screenshot.ok", session=session, actor=self._actor,
+                       png_path=png, bytes=12345, dur_ms=0.0, mode=mode, corr_id=corr)
+            self.send_json({"ok": True, "session": session, "corr_id": corr,
+                            "png": png, "url": target, "mode": mode})
+            return
+
+        img_path = _shots_dir(session) / (corr + ".png")
+
+        def do_capture():
+            t0 = time.time()
+            ok, size, err = capture(target, img_path)
+            dur = round((time.time() - t0) * 1000, 1)
+            if ok:
+                latest = Path(FLEET.canvas_root) / session / "latest.png"
+                try:
+                    latest.write_bytes(img_path.read_bytes())
+                except Exception:
+                    pass
+                _prune_shots(session)
+                dtlog.emit("screenshot.ok", session=session, actor=self._actor,
+                           png_path=str(img_path), bytes=size, dur_ms=dur,
+                           mode=mode, corr_id=corr)
+                # Push model (human 📸): also render into the agent's tmux pane.
+                if not sync and mode in ("chafa", "both"):
+                    try:
+                        subprocess.run(["tmux", "send-keys", "-t", session,
+                                        "chafa {}".format(img_path), "Enter"], timeout=10)
+                    except Exception:
+                        pass
+            else:
+                dtlog.emit("screenshot.fail", level="error", session=session,
+                           actor=self._actor, error=err, dur_ms=dur, corr_id=corr)
+            return ok, size, err
+
+        if sync:
+            # Agent pull model: block, return the real PNG path to Read.
+            ok, size, err = do_capture()
+            if ok:
+                self.send_json({"ok": True, "session": session, "corr_id": corr,
+                                "png": str(img_path), "bytes": size,
+                                "url": target, "mode": mode})
+            else:
+                self.send_json({"ok": False, "session": session, "corr_id": corr,
+                                "error": err}, 502)
+        else:
+            # Human button: fire-and-forget so the dashboard doesn't block.
+            import threading
+            threading.Thread(target=do_capture, daemon=True).start()
+            self.send_json({"ok": True, "session": session, "corr_id": corr,
+                            "message": "Screenshot capturing…"})
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -233,6 +431,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        self._t0 = time.time()
+        self._actor = "anon"
         path = self.path.split("?")[0]
 
         if path == "/api/sessions":
@@ -242,65 +442,220 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(get_sessions())
 
+        elif path == "/api/events/stream":
+            # SSE: live event tail + reload signals (docs/SSOT.md §7).
+            email, err = self.require_auth()
+            if err:
+                self.send_json({"error": err}, 401)
+                return
+            self._sse_open()
+            q = dtlog.BUS.subscribe()
+            dtlog.emit("sse.connect", actor=self._actor,
+                       subscribers=dtlog.BUS.count(), stream=False)
+            try:
+                self._sse_send({"event": "hello", "ts": dtlog._iso_now()})
+                while True:
+                    try:
+                        ev = q.get(timeout=15)
+                    except queue.Empty:
+                        ev = None
+                    if ev is None:
+                        # idle keepalive (write raises if the socket is dead)
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    else:
+                        self._sse_send(ev)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                dtlog.BUS.unsubscribe(q)
+                dtlog.emit("sse.close", actor=self._actor,
+                           subscribers=dtlog.BUS.count(), stream=False)
+            return
+
+        elif path == "/api/fleet":
+            # Declared fleet (SSOT) — what SHOULD exist, vs /api/sessions (live).
+            email, err = self.require_auth()
+            if err:
+                self.send_json({"error": err}, 401)
+                return
+            self.send_json(FLEET.public_view())
+
+        elif path == "/api/screenshot/self":
+            # Agent calls from localhost with no token — auto-detect session name.
+            if not (self.is_loopback() or MOCK):
+                email, err = self.require_auth()
+                if err:
+                    self.send_json({"error": err}, 401)
+                    return
+            session = self._session_from_tmux()
+            if not session:
+                self.send_json({
+                    "error": "Cannot determine session from TMUX env. "
+                             "Are you running inside a tmux session?"
+                }, 400)
+                return
+            self._actor = "agent:" + session
+            self._handle_screenshot(session)
 
         elif path.startswith('/api/screenshot/'):
-            session = path[len('/api/screenshot/'):].strip('/')
+            self._handle_screenshot(path[len('/api/screenshot/'):].strip('/'))
+
+        elif path.startswith('/api/inject/'):
+            session = path[len('/api/inject/'):].strip('/')
             email, err = self.require_auth()
             if err:
                 self.send_json({'error': err}, 401)
                 return
-            # Run screenshot in background so we don't block the response
-            import threading
-            def background():
-                from pathlib import Path
-                screenshot_dir = Path('/home/claude-agent/screenshots')
-                screenshot_dir.mkdir(exist_ok=True)
-                img_path = screenshot_dir / session / 'latest.png'
-                img_path.parent.mkdir(exist_ok=True)
-                port = PREVIEW_PORT_MAP.get(session, 8080)
-                url = 'http://127.0.0.1:{}'.format(port)
-                try:
-                    from playwright.sync_api import sync_playwright
-                    with sync_playwright() as p:
-                        browser = p.chromium.launch(headless=True)
-                        page = browser.new_page(viewport={'width': 1280, 'height': 800})
-                        page.goto(url, timeout=15000, wait_until='domcontentloaded')
-                        page.wait_for_timeout(2000)
-                        page.screenshot(path=str(img_path), full_page=False)
-                        browser.close()
-                    # Send chafa command to agent's tmux so they see it
-                    subprocess.run(
-                        ['tmux', 'send-keys', '-t', session,
-                         "echo '''=== Canvas screenshot ==='''", 'Enter'],
-                        timeout=5
-                    )
-                    subprocess.run(
-                        ['tmux', 'send-keys', '-t', session,
-                         'chafa {}'.format(img_path), 'Enter'],
-                        timeout=10
-                    )
-                except Exception:
-                    pass  # silent — best-effort
-            t = threading.Thread(target=background, daemon=True)
-            t.start()
-            self.send_json({'ok': True, 'session': session, 'message': 'Screenshot captured, sending to agent...'})
+            port = FLEET.canvas_port(session) or '????'
+            msg = (
+                "printf '\\n\\033[1;36m=== dreamTerm canvas tool ===\\033[0m\\n"
+                "canvas shot               # screenshot your dev server → Dr. Rozen sees it\\n"
+                "canvas open <url>         # screenshot any URL\\n"
+                "canvas shot --chafa       # also render ANSI art in this terminal\\n"
+                "Your canvas port: {port}  (run: npx next dev --port {port} --host 0.0.0.0)\\n"
+                "\\033[0m\\n'"
+            ).format(port=port)
+            if MOCK:
+                self.send_json({'ok': True, 'session': session, 'mock': True})
+                return
+            try:
+                subprocess.run(['tmux', 'send-keys', '-t', session, msg, 'Enter'],
+                               timeout=5, check=True)
+                dtlog.emit("tool.invoke", session=session, actor=self._actor,
+                           tool="inject_canvas_onboarding", port=port)
+                self.send_json({'ok': True, 'session': session})
+            except Exception as e:
+                self.send_json({'ok': False, 'error': str(e)}, 500)
 
         elif path == "/" or path == "/index.html":
             f = STATIC_DIR / "index.html"
             if f.exists():
                 body = f.read_bytes()
+                if MOCK:
+                    # Tell the page to skip Firebase and go straight to the
+                    # dashboard, so it can be browser-tested without sign-in.
+                    body = body.replace(
+                        b"<head>",
+                        b"<head><script>window.DREAMTERM_MOCK=true;</script>", 1)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
+                self._emit_http(200)
             else:
                 self.send_error(404)
 
         else:
             self.send_error(404)
 
+
+    # ── Canvas control plane ────────────────────────────────────────────────────
+    def _canvas_session(self, path_prefix):
+        """Extract session name from e.g. /api/canvas/youtube/reload."""
+        prefix = path_prefix.rstrip("/")
+        if not self.path.startswith(prefix + "/"):
+            return None
+        rest = self.path[len(prefix) + 1:].strip("/")
+        # rest is "reload" or "file" or "push"
+        return rest.split("/")[0] if rest else None
+
+    def do_GET_canvas(self, subpath):
+        # GET /api/canvas/<session>/file → serve the canvas artifact
+        if subpath == "file":
+            session = self._canvas_session("/api/canvas")
+            if not session:
+                self.send_error(404)
+                return
+            root = Path(FLEET.canvas_root) / session
+            index = root / "index.html"
+            if index.exists():
+                body = index.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"Canvas is empty. Agent has not pushed content yet.")
+            return
+        self.send_error(404)
+
+    def do_POST_canvas(self, subpath):
+        # POST /api/canvas/<session>/reload → signal iframe to reload
+        if subpath == "reload":
+            session = self._canvas_session("/api/canvas")
+            if not session:
+                self.send_error(404)
+                return
+            # Loopback: agent calling itself; web auth: human clicking reload
+            if not (self.is_loopback() or MOCK):
+                email, err = self.require_auth()
+                if err:
+                    self.send_json({"error": err}, 401)
+                    return
+            dtlog.emit("canvas.reload", session=session, actor=self._actor)
+            self.send_json({"ok": True, "session": session})
+            return
+
+        # POST /api/canvas/<session>/push → agent pushes HTML/PNG artifact
+        if subpath == "push":
+            session = self._canvas_session("/api/canvas")
+            if not session:
+                self.send_error(404)
+                return
+            # Always allow loopback (agents); require auth from web
+            if not (self.is_loopback() or MOCK):
+                email, err = self.require_auth()
+                if err:
+                    self.send_json({"error": err}, 401)
+                    return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+            except Exception:
+                self.send_json({"ok": False, "error": "Cannot read body"}, 400)
+                return
+            # Determine content type
+            ctype = self.headers.get("Content-Type", "")
+            dest = Path(FLEET.canvas_root) / session
+            dest.mkdir(parents=True, exist_ok=True)
+            if "text/html" in ctype or "html" in ctype.lower():
+                out = dest / "index.html"
+                out.write_bytes(body)
+                dtlog.emit("canvas.push", session=session, actor=self._actor,
+                           type="html", size=len(body))
+                self.send_json({"ok": True, "session": session,
+                                "url": f"/api/canvas/{session}/file"})
+            elif "image/" in ctype:
+                out = dest / "artifact.png"
+                out.write_bytes(body)
+                index_html = dest / "index.html"
+                index_html.write_text(
+                    f'<html><body style="margin:0;background:#111">'
+                    f'<img src="artifact.png" style="width:100vw;height:100vh;object-fit:contain"/>'
+                    f'</body></html>'
+                )
+                dtlog.emit("canvas.push", session=session, actor=self._actor,
+                           type="image", size=len(body))
+                self.send_json({"ok": True, "session": session,
+                                "url": f"/api/canvas/{session}/file"})
+            else:
+                self.send_json({"ok": False,
+                                "error": "Content-Type must be text/html or image/*"}, 400)
+            return
+
+        self.send_error(404)
+
     def do_POST(self):
+        self._t0 = time.time()
+        self._actor = "anon"
         path = self.path.split("?")[0]
 
         if path == "/api/auth/verify":
@@ -326,10 +681,30 @@ class Handler(BaseHTTPRequestHandler):
 
             self.send_json({"ok": True, "email": email})
 
+        elif path == "/api/fleet/reload":
+            # Trusted plane: re-read fleet.json from disk (loopback only).
+            if not (self.is_loopback() or MOCK):
+                self.send_json({"ok": False, "error": "loopback only"}, 403)
+                return
+            global FLEET
+            try:
+                FLEET = fleet_mod.load()
+                self.send_json({"ok": True, "sessions": len(FLEET.sessions)})
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)}, 500)
+
+        elif path.startswith("/api/canvas/"):
+            subpath = path[len("/api/canvas/"):].strip("/").split("/", 1)[-1]
+            self.do_POST_canvas(subpath)
+            return
         else:
             self.send_error(404)
 
 if __name__ == "__main__":
     print("Agent Dashboard on http://0.0.0.0:{}".format(PORT))
     print("Allowed: {}".format("ALL" if ALLOW_ALL else ", ".join(sorted(ALLOWED_EMAILS))))
-    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    if MOCK:
+        print("*** DREAMTERM_MOCK mode — fake fleet, auth bypassed ***")
+    dtlog.emit("server.start", port=PORT, mock=MOCK,
+               sessions=len(FLEET.sessions), log_dir=str(LOG_DIR), stream=False)
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

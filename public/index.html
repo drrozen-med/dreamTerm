@@ -136,6 +136,31 @@
   .copy-btn:hover{background:#4ade80;}
   .copy-btn.copied{background:#166534;color:#fff;}
 
+  /* ── Activity panel (SSE) ──────────────────────────────── */
+  #activity-panel{position:fixed;bottom:0;right:0;width:420px;max-width:90vw;
+    background:var(--surface);border:1px solid var(--border);border-bottom:none;
+    border-radius:8px 8px 0 0;z-index:500;font-size:11px;box-shadow:0 -4px 16px rgba(0,0,0,.4);}
+  #activity-panel.collapsed #activity-log{display:none;}
+  #activity-header{display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;
+    border-bottom:1px solid var(--border);user-select:none;}
+  #activity-panel.collapsed #activity-header{border-bottom:none;}
+  .act-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;}
+  .act-dot.live{background:var(--green);box-shadow:0 0 6px var(--green);}
+  .act-title{font-weight:600;letter-spacing:.3px;}
+  .act-count{font-size:10px;color:var(--muted);background:var(--bg);border:1px solid var(--border);
+    border-radius:8px;padding:0 7px;}
+  .act-toggle{margin-left:auto;color:var(--muted);font-size:10px;}
+  #activity-panel.collapsed .act-toggle{transform:rotate(180deg);}
+  #activity-log{max-height:240px;overflow-y:auto;padding:4px 0;font-family:ui-monospace,monospace;}
+  .act-row{display:flex;gap:8px;padding:2px 12px;white-space:nowrap;border-left:2px solid transparent;}
+  .act-row:hover{background:var(--drag);}
+  .act-time{color:var(--muted);flex-shrink:0;}
+  .act-event{color:var(--blue);flex-shrink:0;min-width:120px;}
+  .act-event.ev-screenshot{color:var(--green);}
+  .act-event.ev-error{color:var(--red);}
+  .act-event.ev-canvas{color:var(--purple);}
+  .act-meta{color:var(--text);overflow:hidden;text-overflow:ellipsis;}
+
 </style>
 </head>
 <body>
@@ -191,6 +216,7 @@
           <span class="panel-label">Terminal</span>
           <span class="panel-badge" id="terminal-session-badge"></span>
           <div class="panel-actions">
+            <button class="panel-btn" id="inject-btn" onclick="injectCanvas()" title="Send canvas tool instructions to this agent">📋 Canvas tool</button>
             <button class="panel-btn" onclick="openNewTab('terminal')">↗ New tab</button>
           </div>
         </div>
@@ -231,9 +257,28 @@
   </div>
 </div>
 
-<!-- Firebase SDKs -->
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js">
+<!-- ── ACTIVITY PANEL (SSE live event tail) ─────────────────── -->
+<div id="activity-panel">
+  <div id="activity-header" onclick="toggleActivity()">
+    <span class="act-dot" id="act-dot"></span>
+    <span class="act-title">Activity</span>
+    <span class="act-count" id="act-count">0</span>
+    <span class="act-toggle" id="act-toggle">▲</span>
+  </div>
+  <div id="activity-log"></div>
+</div>
+
+<!-- Firebase SDKs — only loaded when not using API key -->
+<script>
+// Persist key to localStorage so it survives tab/browser restarts.
+(function(){ const k = new URLSearchParams(location.search).get('key'); if (k) localStorage.setItem('dt_key', k); })();
+const _KEY_MODE = !!(new URLSearchParams(location.search).get('key') || localStorage.getItem('dt_key'));
+if (!_KEY_MODE) {
+  document.write('<scr\x69pt src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"><\/script>');
+  document.write('<scr\x69pt src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"><\/script>');
+}
+</script>
+<script>
 async function screenshotCanvas() {
   if (!activeSession) { alert('Select a session first'); return; }
   const btn = document.getElementById('screenshot-btn');
@@ -242,8 +287,8 @@ async function screenshotCanvas() {
   btn.disabled = true;
   try {
     const idToken = await getIdToken();
-    const res = await fetch('/api/screenshot/' + encodeURIComponent(activeSession), {
-      headers: { 'Authorization': 'Bearer ' + idToken }
+    const res = await fetch(_apiUrl('/api/screenshot/' + encodeURIComponent(activeSession)), {
+      headers: idToken ? { 'Authorization': 'Bearer ' + idToken } : {}
     });
     const data = await res.json();
     btn.textContent = data.ok ? 'Sent to agent!' : 'Error: ' + (data.error || 'failed');
@@ -267,8 +312,10 @@ const firebaseConfig = {
   messagingSenderId: "972463294798",
   appId:             "1:972463294798:web:aea85b31a601f36760f61f"
 };
-firebase.initializeApp(firebaseConfig);
-const auth = firebase.auth();
+if (!_KEY_MODE) {
+  firebase.initializeApp(firebaseConfig);
+}
+const auth = _KEY_MODE ? null : firebase.auth();
 
 // ═══════════════════════════════════════════════════════════════
 // AUTH HELPERS
@@ -359,8 +406,36 @@ async function logout() {
   showAuthScreen();
 }
 
+// ── API key bypass ───────────────────────────────────────────
+(function() {
+  const p = new URLSearchParams(window.location.search);
+  const k = p.get('key');
+  if (k) sessionStorage.setItem('dt_key', k);
+})();
+function _apiKey() { return localStorage.getItem('dt_key') || ''; }
+function _apiUrl(path) {
+  const k = _apiKey();
+  return k ? path + (path.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(k) : path;
+}
+
+// ── Mock mode: skip Firebase entirely (local browser testing) ──
+function getIdToken() {
+  if (window.DREAMTERM_MOCK) return Promise.resolve('mock-token');
+  if (_apiKey()) return Promise.resolve(null);  // key mode — no Firebase token needed
+  const user = firebase.auth().currentUser;
+  return user ? user.getIdToken() : Promise.resolve(null);
+}
+
 // ── Check auth state on load ─────────────────────────────────
 async function checkAuth() {
+  if (window.DREAMTERM_MOCK) {
+    showDashboard({ displayName: 'Mock User', email: 'mock@dreamterm.local' });
+    return;
+  }
+  if (_apiKey()) {
+    showDashboard({ displayName: 'Dr. Rozen', email: 'api-key' });
+    return;
+  }
   // 1. Check for redirect result (after signInWithRedirect returns)
   try {
     const result = await firebase.auth().getRedirectResult();
@@ -423,19 +498,18 @@ async function loadSessions() {
   el.textContent = 'loading…';
   el.classList.add('loading');
   try {
-    // Get fresh token
-    const user = firebase.auth().currentUser;
-    if (!user) {
+    // Get fresh token (mock mode returns a stub)
+    const idToken = await getIdToken();
+    if (!idToken && !_apiKey()) {
       showAuthScreen();
       return;
     }
-    const idToken = await user.getIdToken();
 
-    const res = await fetch('/api/sessions', {
-      headers: { 'Authorization': 'Bearer ' + idToken }
+    const res = await fetch(_apiUrl('/api/sessions'), {
+      headers: idToken ? { 'Authorization': 'Bearer ' + idToken } : {}
     });
     if (res.status === 401 || res.status === 403) {
-      showAuthScreen('Session expired — please sign in again.');
+      if (!_apiKey()) showAuthScreen('Session expired — please sign in again.');
       return;
     }
     if (!res.ok) {
@@ -528,32 +602,59 @@ function selectSession(s) {
     badge.textContent = '';
   }
 
+  hint.style.display = 'none';
   if (s.terminal_url) {
-    if (termFrame.src.indexOf(s.terminal_url) === -1) {
-      termFrame.src = s.terminal_url;
-    }
-    termFrame.style.display = 'block';
-    termEmpty.style.display = 'none';
-    hint.style.display = 'flex';
-    setTimeout(() => focusTerminal(), 500);
+    loadFrameSafely(s.terminal_url, termFrame, termEmpty, s.name,
+      '⚠ Terminal not available — is ttyd running for this session?',
+      () => { hint.style.display = 'flex'; setTimeout(() => focusTerminal(), 500); });
   } else {
     termFrame.style.display = 'none';
     termFrame.src = 'about:blank';
     termEmpty.style.display = 'flex';
-    hint.style.display = 'none';
+    termEmpty.textContent = 'No terminal registered for this session';
   }
 
   const prevFrame = document.getElementById('preview-frame');
   const prevEmpty = document.getElementById('preview-empty');
   if (s.preview_url) {
-    prevFrame.src = s.preview_url;
-    prevFrame.style.display = 'block';
-    prevEmpty.style.display = 'none';
+    loadFrameSafely(s.preview_url, prevFrame, prevEmpty, s.name,
+      'No canvas running — agent should start a dev server on its canvas port');
   } else {
     prevFrame.style.display = 'none';
     prevFrame.src = 'about:blank';
     prevEmpty.style.display = 'flex';
+    prevEmpty.textContent = 'No canvas for this session';
   }
+}
+
+// Probe a route before loading it into an iframe, so a 404/502 shows a friendly
+// message instead of the browser's raw error page. Same-origin GET.
+function loadFrameSafely(url, frame, emptyEl, sessionName, failMsg, onOk) {
+  frame.style.display = 'none';
+  emptyEl.style.display = 'flex';
+  emptyEl.textContent = 'Loading…';
+  fetch(url, { cache: 'no-store' })
+    .then(r => {
+      if (activeSession !== sessionName) return;  // user switched away
+      if (r.ok) {
+        if (frame.src.indexOf(url) === -1) frame.src = url;
+        frame.style.display = 'block';
+        emptyEl.style.display = 'none';
+        if (onOk) onOk();
+      } else {
+        frame.src = 'about:blank';
+        frame.style.display = 'none';
+        emptyEl.style.display = 'flex';
+        emptyEl.textContent = failMsg;
+      }
+    })
+    .catch(() => {
+      if (activeSession !== sessionName) return;
+      frame.src = 'about:blank';
+      frame.style.display = 'none';
+      emptyEl.style.display = 'flex';
+      emptyEl.textContent = failMsg;
+    });
 }
 
 function focusTerminal() {
@@ -565,6 +666,21 @@ function focusTerminal() {
 }
 
 document.getElementById('focus-hint').addEventListener('click', focusTerminal);
+
+async function injectCanvas() {
+  if (!activeSession) { alert('Select a session first'); return; }
+  const btn = document.getElementById('inject-btn');
+  btn.textContent = 'Sending…';
+  btn.disabled = true;
+  try {
+    const res = await fetch(_apiUrl('/api/inject/' + encodeURIComponent(activeSession)));
+    const d = await res.json();
+    btn.textContent = d.ok ? '✓ Sent!' : '✗ Failed';
+  } catch(e) {
+    btn.textContent = '✗ Error';
+  }
+  setTimeout(() => { btn.textContent = '📋 Canvas tool'; btn.disabled = false; }, 2500);
+}
 
 function openNewTab(which) {
   const url = which === 'terminal' ? terminalUrl : previewUrl;
@@ -606,8 +722,69 @@ function openNewTab(which) {
   });
 })();
 
+// ── Activity panel + SSE ───────────────────────────────────
+let _evtSource = null;
+let _actCount = 0;
+
+function toggleActivity() {
+  document.getElementById('activity-panel').classList.toggle('collapsed');
+}
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  const t = ts.indexOf('T') >= 0 ? ts.split('T')[1] : ts;
+  return t.slice(0, 8);
+}
+
+function eventClass(ev) {
+  if (!ev) return '';
+  if (ev.startsWith('screenshot')) return 'ev-screenshot';
+  if (ev.startsWith('canvas')) return 'ev-canvas';
+  if (ev === 'error' || ev.endsWith('.fail')) return 'ev-error';
+  return '';
+}
+
+function renderEvent(d) {
+  if (!d || d.event === 'hello') return;
+  const log = document.getElementById('activity-log');
+  if (!log) return;
+  const meta = Object.keys(d)
+    .filter(k => !['ts', 'level', 'event', 'actor'].includes(k))
+    .map(k => k + '=' + d[k]).join(' ');
+  const row = document.createElement('div');
+  row.className = 'act-row';
+  row.innerHTML =
+    '<span class="act-time">' + fmtTime(d.ts) + '</span>' +
+    '<span class="act-event ' + eventClass(d.event) + '">' + (d.event || '?') + '</span>' +
+    '<span class="act-meta" title="' + (d.session || '') + ' ' + meta + '">' +
+      (d.session ? '[' + d.session + '] ' : '') + meta + '</span>';
+  log.insertBefore(row, log.firstChild);
+  while (log.childNodes.length > 200) log.removeChild(log.lastChild);
+  _actCount++;
+  document.getElementById('act-count').textContent = _actCount;
+}
+
+async function connectSSE() {
+  if (_evtSource) return;
+  const token = await getIdToken();
+  if (!token) return;
+  const url = _apiKey()
+    ? _apiUrl('/api/events/stream')
+    : '/api/events/stream?token=' + encodeURIComponent(token);
+  const es = new EventSource(url);
+  _evtSource = es;
+  const dot = document.getElementById('act-dot');
+  es.onopen = () => { if (dot) dot.classList.add('live'); };
+  es.onmessage = (e) => { try { renderEvent(JSON.parse(e.data)); } catch (x) {} };
+  es.onerror = () => {
+    if (dot) dot.classList.remove('live');
+    // EventSource auto-reconnects; just reflect state.
+  };
+}
+
 // ── Init ───────────────────────────────────────────────────
 checkAuth();
+connectSSE();
 setInterval(loadSessions, 30000);
 
 

@@ -1,0 +1,33 @@
+{
+  "$schema": "./docs/fleet.schema.json",
+  "_comment": "SINGLE SOURCE OF TRUTH for the dreamTerm fleet. Defined once here; server.py, the `canvas` CLI, the dashboard (/api/fleet), and the nginx/systemd renderers all read THIS. Do not duplicate these values anywhere else. Adding an agent = add an entry here + run scripts/sync_fleet.sh. Seeded 2026-06-02 from live ttyd systemd units on the VM (the previous in-code maps were stale: tmux was running rafael-companion/shani-companion, which had no terminals wired).",
+  "vm": {
+    "host": "187.124.181.251",
+    "ssh_user": "root",
+    "service_user": "claude-agent",
+    "dashboard_port": 4000,
+    "ttyd_port_range": [7681, 7699],
+    "canvas_port_range": [8081, 8099]
+  },
+  "paths": {
+    "canvas_root": "/home/claude-agent/canvas",
+    "log_root": "/var/log/dreamterm",
+    "firebase_creds": "/home/claude-agent/NurseBridge-prep/credentials/service_accounts/nursebridge-prep-firebase-adminsdk-fbsvc-38884db962.json"
+  },
+  "allowed_emails": [
+    "drrozen@gmail.com",
+    "urirozen@gmail.com",
+    "dr.rozen@concise-med.com"
+  ],
+  "sessions": [
+    { "name": "alex_nursgebride_funnel", "ttyd_port": 7681, "canvas_port": 8088, "canvas_mode": "lovable", "label": "Alex — NurseBridge funnel" },
+    { "name": "redit",                   "ttyd_port": 7682, "canvas_port": 8089, "canvas_mode": "lovable", "label": "Reddit" },
+    { "name": "dev-parents-path",        "ttyd_port": 7683, "canvas_port": 8085, "canvas_mode": "lovable", "label": "Dev — Parents Path" },
+    { "name": "tiktok_scraper",          "ttyd_port": 7684, "canvas_port": 8086, "canvas_mode": "artifact", "label": "TikTok scraper" },
+    { "name": "hermes_marketing",        "ttyd_port": 7685, "canvas_port": 8087, "canvas_mode": "artifact", "label": "Hermes — marketing" },
+    { "name": "youtube",                 "ttyd_port": 7686, "canvas_port": 8081, "canvas_mode": "artifact", "label": "YouTube" },
+    { "name": "obyx_code",               "ttyd_port": 7687, "canvas_port": 8082, "canvas_mode": "lovable", "label": "Obyx — code" },
+    { "name": "sleepy_sounds",           "ttyd_port": 7688, "canvas_port": 8083, "canvas_mode": "lovable", "label": "Sleepy sounds" },
+    { "name": "yakov_gcp",               "ttyd_port": 7689, "canvas_port": 8084, "canvas_mode": "artifact", "label": "Yakov — GCP" }
+  ]
+}

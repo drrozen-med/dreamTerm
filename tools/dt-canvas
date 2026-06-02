@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# dt-canvas — dreamTerm agent tool for screenshots and canvas control.
+# Source this file in .bashrc, or run: source /path/to/dt-canvas
+#
+# What it does:
+#   dt shot          — screenshot your dev server, send chafa to YOUR tmux pane
+#   dt open <url>    — screenshot any URL, send chafa to YOUR tmux pane
+#   dt push <file>   — push an HTML/PNG file to your Canvas (Dr. Rozen sees it)
+#   dt reload        — tell Dr. Rozen's dashboard to refresh the Canvas iframe
+#   dt help          — show this message
+#
+# Requirements:
+#   - Running inside a tmux session
+#   - curl available
+#   - chafa available (for shot / open)
+#   - Network access to localhost:4000 (the dreamTerm API)
+
+DREAMTERM_API="${DREAMTERM_API:-http://127.0.0.1:4000}"
+
+# ── Detect our tmux session name ───────────────────────────────────────────
+_dt_session() {
+    tmux display -p '#S' 2>/dev/null
+}
+
+# ── One-line screenshot: captures canvas, pipes chafa to this terminal ──────
+_dt_shot() {
+    local session=$(_dt_session)
+    if [[ -z "$session" ]]; then
+        echo "dt: not running inside tmux — cannot determine session" >&2
+        return 1
+    fi
+    echo "dt: screenshot → chafa render in ${session}..."
+    local resp
+    resp=$(curl -s "${DREAMTERM_API}/api/screenshot/${session}?mode=chafa")
+    local ok=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ok',False))" 2>/dev/null)
+    if [[ "$ok" == "True" ]]; then
+        echo "dt: ✅ screenshot captured — check your terminal for chafa render"
+    else
+        local err=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error','?'))" 2>/dev/null)
+        echo "dt: ❌ $err" >&2
+    fi
+}
+
+# ── Screenshot any URL ───────────────────────────────────────────────────────
+_dt_open() {
+    local session=$(_dt_session)
+    if [[ -z "$session" ]]; then
+        echo "dt: not running inside tmux" >&2; return 1; fi
+    if [[ -z "$1" ]]; then
+        echo "Usage: dt open <url>" >&2; return 1; fi
+    local encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$1'))")
+    echo "dt: capturing $1..."
+    curl -s "${DREAMTERM_API}/api/screenshot/${session}?mode=chafa&url=${encoded}" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+if d.get('ok'):
+    print('dt: ✅ captured — check terminal for chafa render')
+else:
+    print('dt: ❌ ' + d.get('error','?'))
+" 2>/dev/null
+}
+
+# ── Push HTML/PNG artifact to canvas ────────────────────────────────────────
+_dt_push() {
+    local session=$(_dt_session)
+    if [[ -z "$session" ]]; then
+        echo "dt: not running inside tmux" >&2; return 1; fi
+    if [[ -z "$1" ]]; then
+        echo "Usage: dt push <file.html|file.png>" >&2; return 1; fi
+    if [[ ! -f "$1" ]]; then
+        echo "dt: file not found: $1" >&2; return 1; fi
+    local ext="${1##*.}"
+    local ctype="text/html"
+    [[ "$ext" == "png" || "$ext" == "jpg" || "$ext" == "jpeg" || "$ext" == "gif" || "$ext" == "webp" ]] && ctype="image/${ext}"
+    [[ "$ext" == "svg" ]] && ctype="image/svg+xml"
+    echo "dt: pushing $1 (${ctype}) to canvas..."
+    local resp
+    resp=$(curl -s -X POST \
+        -H "Content-Type: ${ctype}" \
+        --data-binary "@$1" \
+        "${DREAMTERM_API}/api/canvas/${session}/push")
+    local url=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('url',''))" 2>/dev/null)
+    if [[ -n "$url" ]]; then
+        echo "dt: ✅ pushed — Dr. Rozen's Canvas panel now shows: ${url}"
+    else
+        local err=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error','?'))" 2>/dev/null)
+        echo "dt: ❌ $err" >&2
+    fi
+}
+
+# ── Signal Canvas iframe to reload ───────────────────────────────────────────
+_dt_reload() {
+    local session=$(_dt_session)
+    if [[ -z "$session" ]]; then
+        echo "dt: not running inside tmux" >&2; return 1; fi
+    local resp=$(curl -s -X POST "${DREAMTERM_API}/api/canvas/${session}/reload")
+    local ok=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ok',False))" 2>/dev/null)
+    if [[ "$ok" == "True" ]]; then
+        echo "dt: ✅ Canvas iframe will refresh — Dr. Rozen sees the latest build"
+    else
+        echo "dt: ❌ reload failed" >&2
+    fi
+}
+
+# ── Main dispatcher ──────────────────────────────────────────────────────────
+dt() {
+    case "${1:-}" in
+        shot)   _dt_shot ;;
+        open)   _dt_open "$2" ;;
+        push)   _dt_push "$2" ;;
+        reload) _dt_reload ;;
+        help|--help|-h|"")
+            cat << 'HELP'
+dt — dreamTerm agent canvas tool
+===============================
+Usage: dt <command>
+
+Commands:
+  dt shot              Screenshot your dev server → chafa in YOUR terminal
+  dt open <url>        Screenshot any URL → chafa in YOUR terminal
+  dt push <file>       Push HTML/PNG/SVG → Dr. Rozen's Canvas panel shows it
+  dt reload            Tell Dr. Rozen's dashboard to refresh the Canvas iframe
+  dt help              Show this message
+
+Requirements:
+  - Running inside a tmux session
+  - curl, python3, chafa installed
+  - Access to localhost:4000 (dreamTerm API)
+
+Examples:
+  dt shot                          # see your web app as ASCII art
+  dt push my_diagram.html          # Dr. Rozen sees it in Canvas panel
+  npx next dev --port 8081 &       # start dev server
+  dt shot && dt reload             # screenshot + signal Dr. Rozen to refresh
+HELP
+            ;;
+        *)  echo "dt: unknown command '$1'. Run 'dt help' for usage." >&2 ;;
+    esac
+}
+
+# Auto-inject into tmux pane title so we know which session has dt active
+if [[ -n "$TMUX" ]]; then
+    printf '\033]2;dt\033\\' 2>/dev/null
+fi
