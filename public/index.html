@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Dashboard — VM 187.124.181.251</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  :root{
+    --bg:#0d1117;--surface:#161b22;--border:#30363d;
+    --text:#e6edf3;--muted:#8b949e;--green:#3fb950;
+    --blue:#1f6feb;--orange:#d29922;--red:#f85149;
+    --drag:#21262d;--purple:#a371f7;--yellow:#e3b341;
+  }
+  html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;}
+
+  /* ── Auth Screen ─────────────────────────────────────── */
+  #auth-screen{
+    position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:var(--bg);z-index:9999;flex-direction:column;gap:24px;
+  }
+  #auth-screen.hidden{display:none;}
+  .auth-card{
+    background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    padding:40px;max-width:380px;width:90%;text-align:center;
+  }
+  .auth-card h2{font-size:20px;margin-bottom:8px;}
+  .auth-card p{color:var(--muted);font-size:13px;margin-bottom:24px;line-height:1.5;}
+  .auth-card .vm-tag{
+    font-size:11px;color:var(--muted);background:var(--bg);border:1px solid var(--border);
+    border-radius:4px;padding:3px 10px;display:inline-block;margin-bottom:24px;
+  }
+  #google-signin-btn{
+    display:inline-flex;align-items:center;gap:10px;background:#fff;color:#333;
+    border:none;border-radius:6px;padding:10px 20px;font-size:14px;font-weight:500;
+    cursor:pointer;width:100%;justify-content:center;
+  }
+  #google-signin-btn:hover{background:#f0f0f0;}
+  #google-signin-btn:disabled{opacity:.6;cursor:not-allowed;}
+  #google-signin-btn svg{width:18px;height:18px;}
+  #auth-error{color:var(--red);font-size:13px;margin-top:12px;min-height:20px;text-align:left;}
+  #auth-info{color:var(--orange);font-size:12px;margin-top:8px;text-align:left;line-height:1.5;}
+
+  /* Loading spinner */
+  .spinner{
+    display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.2);
+    border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* ── Dashboard ──────────────────────────────────────────── */
+  #dashboard{display:none;flex-direction:column;height:100vh;}
+  #dashboard.visible{display:flex;}
+
+  /* Header */
+  #header{flex:0 0 44px;display:flex;align-items:center;gap:10px;padding:0 16px;background:var(--surface);border-bottom:1px solid var(--border);}
+  #header h1{font-size:14px;font-weight:600;letter-spacing:.3px;}
+  .vm-badge{font-size:11px;color:var(--muted);background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 8px;}
+  #user-badge{font-size:11px;color:var(--text);background:rgba(31,111,235,.2);border:1px solid rgba(31,111,235,.4);border-radius:4px;padding:2px 8px;margin-left:auto;}
+  #logout-btn{background:none;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;margin-left:8px;}
+  #logout-btn:hover{border-color:var(--red);color:var(--red);}
+  #refresh-btn{background:none;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;}
+  #refresh-btn:hover{border-color:var(--blue);color:var(--blue);}
+
+  /* Fleet bar */
+  #fleet-bar{flex:0 0 auto;display:flex;gap:12px;padding:6px 16px;background:var(--bg);border-bottom:1px solid var(--border);overflow-x:auto;}
+  .fleet-chip{font-size:11px;padding:2px 10px;border-radius:12px;white-space:nowrap;}
+  .chip-hermes{background:rgba(31,111,235,.2);color:#79c0ff;border:1px solid rgba(31,111,235,.4);}
+  .chip-pi{background:rgba(63,185,80,.2);color:#7ee787;border:1px solid rgba(63,185,80,.4);}
+  .chip-codex{background:rgba(163,113,247,.2);color:#d2a8ff;border:1px solid rgba(163,113,247,.4);}
+  .chip-human{background:rgba(227,179,65,.2);color:#e3b341;border:1px solid rgba(227,179,65,.4);}
+  .chip-empty{background:rgba(139,148,158,.1);color:var(--muted);border:1px solid var(--border);}
+
+  /* Sidebar */
+  #sidebar{flex:0 0 220px;overflow-y:auto;border-right:1px solid var(--border);background:var(--surface);}
+  .section-label{padding:8px 12px 4px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);}
+  .session-item{display:flex;align-items:center;gap:6px;padding:6px 12px;cursor:pointer;font-size:12px;border-left:2px solid transparent;transition:all .1s;min-width:0;}
+  .session-item:hover{background:var(--drag);}
+  .session-item.active{background:var(--drag);border-left-color:var(--blue);}
+  .agent-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+  .dot.attached{background:var(--green);box-shadow:0 0 4px var(--green);}
+  .dot.idle{background:var(--muted);}
+  .dot.no-terminal{background:var(--orange);}
+  .agent-badge{font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;flex-shrink:0;letter-spacing:.3px;line-height:14px;}
+  .badge-HERMES{background:rgba(31,111,235,.25);color:#79c0ff;}
+  .badge-PI{background:rgba(63,185,80,.25);color:#7ee787;}
+  .badge-CODEX{background:rgba(163,113,247,.25);color:#d2a8ff;}
+  .badge-HUMAN-ET{background:rgba(227,179,65,.25);color:#e3b341;}
+  .badge-PROCESS{background:rgba(139,148,158,.2);color:var(--muted);}
+  .badge-EMPTY{background:transparent;}
+  .session-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;}
+  .cpu-badge{font-size:9px;color:var(--muted);flex-shrink:0;min-width:38px;text-align:right;}
+
+  /* Body */
+  #body{display:flex;flex:1;min-height:0;}
+  #split{display:flex;flex:1;min-width:0;}
+
+  /* Panels */
+  #left-panel,#right-panel{display:flex;flex-direction:column;min-width:0;}
+  #left-panel{flex:60 1 0;}
+  #right-panel{flex:40 1 0;border-left:1px solid var(--border);}
+  .panel-header{flex:0 0 28px;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--surface);border-bottom:1px solid var(--border);}
+  .panel-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);}
+  .panel-badge{font-size:10px;background:rgba(139,148,158,.15);color:var(--muted);padding:1px 6px;border-radius:8px;}
+  .panel-actions{margin-left:auto;display:flex;gap:6px;}
+  .panel-btn{background:none;border:1px solid var(--border);color:var(--muted);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;}
+  .panel-btn:hover{border-color:var(--blue);color:var(--blue);}
+  .panel-btn.canvas-btn{color:var(--green);border-color:var(--green);}
+  .panel-btn.canvas-btn:hover{background:var(--green);color:#000;}
+
+  /* Drag divider */
+  #divider{flex:0 0 5px;background:var(--border);cursor:col-resize;transition:background .15s;position:relative;z-index:10;}
+  #divider:hover,#divider.dragging{background:var(--blue);}
+  #divider::after{content:'';position:absolute;top:0;left:-4px;right:-4px;bottom:0;}
+
+  /* iframes */
+  .frame-wrap{flex:1;position:relative;overflow:hidden;}
+  iframe{width:100%;height:100%;border:none;background:var(--bg);}
+
+  /* Focus hint */
+  .focus-hint{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:11px;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:4px 12px;pointer-events:none;z-index:5;}
+
+  /* Empty state */
+  .empty{display:flex;align-items:center;justify-content:center;flex:1;color:var(--muted);font-size:13px;flex-direction:column;gap:8px;}
+  .empty svg{opacity:.3;}
+  .loading{animation:pulse 1.2s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:.4;}50%{opacity:1;}}
+
+  #canvas-panel{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 12px;}
+  #canvas-panel .panel-title{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:8px;}
+  .canvas-item{display:flex;align-items:center;gap:5px;margin-bottom:5px;font-size:11px;}
+  .canvas-item .chip{padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;color:#fff;min-width:50px;text-align:center;}
+  .canvas-item pre{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-family:monospace;font-size:10px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0;cursor:pointer;}
+  .canvas-item pre:hover{border-color:var(--blue);color:var(--blue);}
+  .copy-btn{background:var(--green);color:#000;border:none;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0;}
+  .copy-btn:hover{background:#4ade80;}
+  .copy-btn.copied{background:#166534;color:#fff;}
+
+</style>
+</head>
+<body>
+
+<!-- ── AUTH SCREEN ──────────────────────────────────────────── -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <h2>🖥 Agent Dashboard</h2>
+    <span class="vm-tag">187.124.181.251</span>
+    <p>Sign in with your NurseBridge Google account to access the VM agent fleet dashboard.</p>
+    <button id="google-signin-btn" onclick="startGoogleSignIn()">
+      <svg viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z"/><path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/></svg>
+      <span id="signin-btn-label">Sign in with Google</span>
+    </button>
+    <div id="auth-error"></div>
+    <div id="auth-info">If sign-in hangs, check that popup blockers are disabled for this page.</div>
+  </div>
+</div>
+
+<!-- ── DASHBOARD ───────────────────────────────────────────── -->
+<div id="dashboard">
+  <div id="header">
+    <h1>🖥 Agent Dashboard</h1>
+    <span class="vm-badge">187.124.181.251</span>
+    <span id="session-count" class="vm-badge loading">loading…</span>
+    <span id="user-badge">👤</span>
+    <button id="logout-btn" onclick="logout()">Sign out</button>
+    <button id="refresh-btn" onclick="loadSessions()">↻ Refresh</button>
+  </div>
+  <div id="fleet-bar"></div>
+  <div id="body">
+    <div id="sidebar">
+      
+    <div id="canvas-panel">
+      <div class="panel-title">&#128203; Canvas Setup &mdash; click to copy command, then paste in terminal</div>
+      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8081 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
+      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8082 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
+      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8083 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
+      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8084 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
+      <div class="canvas-item"><span class="chip" style="background:#0891b2">PI</span><pre onclick="copyCmd(this)">npx next dev --port 8085 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
+      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8086 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
+      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8087 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
+      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8088 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
+      <div class="canvas-item"><span class="chip" style="background:#7c3aed">HERMES</span><pre onclick="copyCmd(this)">npx next dev --port 8089 --host 0.0.0.0</pre><button class="copy-btn" onclick="copyCmd(this.previousElementSibling)">Copy</button></div>
+    </div>
+
+    <div class="section-label">Sessions <span id="sidebar-count"></span></div>
+      <div id="session-list"></div>
+    </div>
+    <div id="split">
+      <div id="left-panel">
+        <div class="panel-header">
+          <span class="panel-label">Terminal</span>
+          <span class="panel-badge" id="terminal-session-badge"></span>
+          <div class="panel-actions">
+            <button class="panel-btn" onclick="openNewTab('terminal')">↗ New tab</button>
+          </div>
+        </div>
+        <div class="frame-wrap" id="terminal-wrap">
+          <div class="empty" id="terminal-empty">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M2 5a2 2 0 012-2h16a2 2 0 012 2v14a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm2 0v14h16V5H4zm2 3l4 4-4 4 1.5 1.5 5.5-5.5L7.5 6.5 6 8zm6 6h6v2h-6v-2z"/></svg>
+            Select a session from the left
+          </div>
+          <!--
+            allow="fullscreen" for potential fullscreen use
+            allow="clipboard-read; clipboard-write" for terminal copy/paste
+            allow="pointer" for mouse interaction
+          -->
+          <iframe id="terminal-frame" style="display:none"
+            allow="clipboard-read; clipboard-write; pointer"
+            referrerpolicy="no-referrer"
+            title="Agent terminal"></iframe>
+          <div class="focus-hint" id="focus-hint" style="display:none">✓ Terminal ready — click here to activate keyboard</div>
+        </div>
+      </div>
+      <div id="divider"></div>
+      <div id="right-panel">
+        <div class="panel-header">
+          <span class="panel-label">Canvas</span>
+          <div class="panel-actions">
+            <button class="panel-btn canvas-btn" id="screenshot-btn" onclick="screenshotCanvas()" title="Capture canvas and send to agent">📸 Canvas</button>
+            <button class="panel-btn" onclick="openNewTab('preview')">↗ Tab</button>
+          </div>
+        </div>
+        <div class="frame-wrap">
+          <div class="empty" id="preview-empty">No canvas running — agent should start a dev server</div>
+          <iframe id="preview-frame" style="display:none"
+            allow="clipboard-read; clipboard-write"
+            referrerpolicy="no-referrer"></iframe>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Firebase SDKs -->
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js">
+async function screenshotCanvas() {
+  if (!activeSession) { alert('Select a session first'); return; }
+  const btn = document.getElementById('screenshot-btn');
+  if (!btn) return;
+  btn.textContent = 'Capturing...';
+  btn.disabled = true;
+  try {
+    const idToken = await getIdToken();
+    const res = await fetch('/api/screenshot/' + encodeURIComponent(activeSession), {
+      headers: { 'Authorization': 'Bearer ' + idToken }
+    });
+    const data = await res.json();
+    btn.textContent = data.ok ? 'Sent to agent!' : 'Error: ' + (data.error || 'failed');
+    setTimeout(() => { btn.textContent = '📸 Canvas'; btn.disabled = false; }, 3000);
+  } catch(e) {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = '📸 Canvas'; btn.disabled = false; }, 3000);
+  }
+}
+</script>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// FIREBASE CONFIG — nursebridge-prep project
+// ═══════════════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey:            "AIzaSyCGQJtSV5Ct9wnLn5iE5iX0o5XeOnTN8NE",
+  authDomain:        "nursebridge-prep.firebaseapp.com",
+  projectId:         "nursebridge-prep",
+  storageBucket:     "nursebridge-prep.firebasestorage.app",
+  messagingSenderId: "972463294798",
+  appId:             "1:972463294798:web:aea85b31a601f36760f61f"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+
+// ═══════════════════════════════════════════════════════════════
+// AUTH HELPERS
+// ═══════════════════════════════════════════════════════════════
+const SESSION_KEY = 'dashboard_id_token';
+
+function showAuthScreen(msg) {
+  document.getElementById('dashboard').classList.remove('visible');
+  document.getElementById('auth-screen').classList.remove('hidden');
+  document.getElementById('signin-btn-label').textContent = 'Sign in with Google';
+  document.getElementById('google-signin-btn').disabled = false;
+  document.getElementById('auth-error').textContent = msg || '';
+}
+
+function showDashboard(user) {
+  const name = (user && user.displayName) ? user.displayName.split(' ')[0] : (user && user.email ? user.email.split('@')[0] : 'User');
+  document.getElementById('user-badge').textContent = '👤 ' + name;
+  document.getElementById('auth-screen').classList.add('hidden');
+  document.getElementById('dashboard').classList.add('visible');
+  loadSessions();
+}
+
+function setAuthError(msg) {
+  document.getElementById('auth-error').textContent = msg;
+  document.getElementById('signin-btn-label').textContent = 'Sign in with Google';
+  document.getElementById('google-signin-btn').disabled = false;
+}
+
+function setAuthLoading(label) {
+  document.getElementById('signin-btn-label').innerHTML = '<span class="spinner"></span> ' + label;
+  document.getElementById('google-signin-btn').disabled = true;
+  document.getElementById('auth-error').textContent = '';
+}
+
+// ── Google Sign-In (popup, fallback to redirect) ──────────────
+async function startGoogleSignIn() {
+  setAuthLoading('Connecting to Google…');
+  const provider = new firebase.auth.GoogleAuthProvider();
+
+  try {
+    // Try popup first
+    const result = await firebase.auth().signInWithPopup(provider);
+    await onAuthSuccess(result.user);
+  } catch (e) {
+    if (e.code === 'auth/popup-blocked') {
+      // Popup blocked — try redirect
+      setAuthLoading('Opening Google (popup blocked)…');
+      try {
+        await firebase.auth().signInWithRedirect(provider);
+        // If redirect returns, onAuthStateChanged will fire
+      } catch (e2) {
+        setAuthError('Sign-in blocked. Please allow popups/redirects for this page, then try again.');
+      }
+    } else if (e.code === 'auth/user-cancelled' || e.code === 'auth/cancelled-popup-request') {
+      setAuthError('');
+    } else {
+      setAuthError('Sign-in failed: ' + (e.message || e.code || String(e)));
+    }
+  }
+}
+
+async function onAuthSuccess(user) {
+  if (!user) return;
+  try {
+    const idToken = await user.getIdToken();
+    // Verify with backend
+    const res = await fetch('/api/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      await firebase.auth().signOut();
+      setAuthError('Access denied: ' + (data.error || 'Your account is not authorized. Contact Dr. Rozen.'));
+      return;
+    }
+    localStorage.setItem(SESSION_KEY, idToken);
+    showDashboard(user);
+  } catch (e) {
+    setAuthError('Connection error: ' + (e.message || String(e)) + '. Is the VM reachable?');
+  }
+}
+
+async function logout() {
+  await firebase.auth().signOut();
+  localStorage.removeItem(SESSION_KEY);
+  showAuthScreen();
+}
+
+// ── Check auth state on load ─────────────────────────────────
+async function checkAuth() {
+  // 1. Check for redirect result (after signInWithRedirect returns)
+  try {
+    const result = await firebase.auth().getRedirectResult();
+    if (result && result.user) {
+      await onAuthSuccess(result.user);
+      return;
+    }
+  } catch (e) {
+    // Redirect might have failed — fall through to check session
+    if (e.code && !['auth/user-cancelled', 'auth/cancelled-popup-request'].includes(e.code)) {
+      setAuthError('Redirect sign-in failed: ' + (e.message || e.code));
+      return;
+    }
+  }
+
+  // 2. Listen for Firebase auth state changes (persistent session)
+  firebase.auth().onAuthStateChanged(async (user) => {
+    if (user) {
+      await onAuthSuccess(user);
+    } else {
+      showAuthScreen();
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SESSION STATE
+// ═══════════════════════════════════════════════════════════════
+let sessions = [];
+let activeSession = null;
+let terminalUrl = null;
+let previewUrl = null;
+
+const AGENT_LABELS = {
+  'HERMES':   { label: 'HERMES',  cls: 'chip-hermes',  badgeCls: 'badge-HERMES' },
+  'PI':       { label: 'PI',      cls: 'chip-pi',       badgeCls: 'badge-PI' },
+  'CODEX':    { label: 'CODEX',   cls: 'chip-codex',    badgeCls: 'badge-CODEX' },
+  'HUMAN-ET': { label: 'HUMAN',   cls: 'chip-human',    badgeCls: 'badge-HUMAN-ET' },
+  'EMPTY':    { label: 'EMPTY',   cls: 'chip-empty',    badgeCls: 'badge-EMPTY' },
+};
+const PROCESS_RE = /^PROCESS:/;
+const PROCESS_LABEL = { label: 'PROC', cls: 'chip-empty', badgeCls: 'badge-PROCESS' };
+
+function getAgentInfo(agentType) {
+  if (PROCESS_RE.test(agentType)) return PROCESS_LABEL;
+  return AGENT_LABELS[agentType] || { label: agentType, cls: 'chip-empty', badgeCls: 'badge-EMPTY' };
+}
+
+function shortCpu(cpu) {
+  if (cpu >= 100) return cpu.toFixed(0) + '%';
+  if (cpu >= 10)  return cpu.toFixed(1) + '%';
+  if (cpu > 0)    return cpu.toFixed(1) + '%';
+  return '';
+}
+
+// ── Session loading ────────────────────────────────────────
+async function loadSessions() {
+  const el = document.getElementById('session-count');
+  if (!el) return;
+  el.textContent = 'loading…';
+  el.classList.add('loading');
+  try {
+    // Get fresh token
+    const user = firebase.auth().currentUser;
+    if (!user) {
+      showAuthScreen();
+      return;
+    }
+    const idToken = await user.getIdToken();
+
+    const res = await fetch('/api/sessions', {
+      headers: { 'Authorization': 'Bearer ' + idToken }
+    });
+    if (res.status === 401 || res.status === 403) {
+      showAuthScreen('Session expired — please sign in again.');
+      return;
+    }
+    if (!res.ok) {
+      const txt = await res.text();
+      el.textContent = 'error: ' + res.status;
+      el.classList.remove('loading');
+      return;
+    }
+    sessions = await res.json();
+    renderFleetBar();
+    renderSidebar();
+    const count = sessions.length;
+    const attached = sessions.filter(s => s.attached).length;
+    const agents = sessions.filter(s => s.agent_type && s.agent_type !== 'EMPTY').length;
+    el.textContent = count + ' sessions · ' + agents + ' agents · ' + attached + ' active';
+    el.classList.remove('loading');
+    document.getElementById('sidebar-count').textContent = '(' + count + ')';
+  } catch(e) {
+    if (el) {
+      el.textContent = 'error';
+      el.classList.remove('loading');
+    }
+  }
+}
+
+function renderFleetBar() {
+  const bar = document.getElementById('fleet-bar');
+  bar.innerHTML = '';
+  const counts = { HERMES: 0, PI: 0, CODEX: 0, 'HUMAN-ET': 0, EMPTY: 0, PROCESS: 0 };
+  sessions.forEach(s => {
+    if (s.agent_type === 'EMPTY')  counts.EMPTY++;
+    else if (PROCESS_RE.test(s.agent_type)) counts.PROCESS++;
+    else counts[s.agent_type] = (counts[s.agent_type] || 0) + 1;
+  });
+  [
+    { type: 'HERMES',   icon: '🤖', label: 'Hermes' },
+    { type: 'PI',       icon: '🤖', label: 'Pi' },
+    { type: 'CODEX',    icon: '🤖', label: 'Codex' },
+    { type: 'HUMAN-ET', icon: '👤', label: 'Human' },
+    { type: 'PROCESS',  icon: '🔧', label: 'Process' },
+    { type: 'EMPTY',    icon: '⚪', label: 'Empty' },
+  ].forEach(c => {
+    if (!counts[c.type]) return;
+    const info = getAgentInfo(c.type);
+    const span = document.createElement('span');
+    span.className = 'fleet-chip ' + info.cls;
+    span.textContent = c.icon + ' ' + c.label + ': ' + counts[c.type];
+    bar.appendChild(span);
+  });
+}
+
+function renderSidebar() {
+  const list = document.getElementById('session-list');
+  list.innerHTML = '';
+  sessions.forEach(s => {
+    const info = getAgentInfo(s.agent_type || 'EMPTY');
+    const dotClass = s.attached ? 'attached' : (s.terminal_url ? 'idle' : 'no-terminal');
+    const cpuStr = shortCpu(s.cpu_percent || 0);
+    const div = document.createElement('div');
+    div.className = 'session-item' + (activeSession === s.name ? ' active' : '');
+    div.innerHTML =
+      '<span class="agent-dot ' + dotClass + '"></span>' +
+      '<span class="agent-badge ' + info.badgeCls + '">' + info.label + '</span>' +
+      '<span class="session-name" title="' + s.name + '">' + s.name + '</span>' +
+      '<span class="cpu-badge">' + cpuStr + '</span>';
+    div.onclick = function(e) {
+      e.preventDefault();   // prevent "leaving site" dialog
+      selectSession(s);
+    };
+    list.appendChild(div);
+  });
+}
+
+function selectSession(s) {
+  activeSession = s.name;
+  terminalUrl = s.terminal_url;
+  previewUrl = s.preview_url;
+  renderSidebar();
+
+  const termFrame = document.getElementById('terminal-frame');
+  const termEmpty = document.getElementById('terminal-empty');
+  const hint = document.getElementById('focus-hint');
+  const badge = document.getElementById('terminal-session-badge');
+
+  if (s.agent_type && s.agent_type !== 'EMPTY') {
+    badge.textContent = getAgentInfo(s.agent_type).label;
+    badge.style.display = 'inline';
+  } else {
+    badge.style.display = 'none';
+    badge.textContent = '';
+  }
+
+  if (s.terminal_url) {
+    if (termFrame.src.indexOf(s.terminal_url) === -1) {
+      termFrame.src = s.terminal_url;
+    }
+    termFrame.style.display = 'block';
+    termEmpty.style.display = 'none';
+    hint.style.display = 'flex';
+    setTimeout(() => focusTerminal(), 500);
+  } else {
+    termFrame.style.display = 'none';
+    termFrame.src = 'about:blank';
+    termEmpty.style.display = 'flex';
+    hint.style.display = 'none';
+  }
+
+  const prevFrame = document.getElementById('preview-frame');
+  const prevEmpty = document.getElementById('preview-empty');
+  if (s.preview_url) {
+    prevFrame.src = s.preview_url;
+    prevFrame.style.display = 'block';
+    prevEmpty.style.display = 'none';
+  } else {
+    prevFrame.style.display = 'none';
+    prevFrame.src = 'about:blank';
+    prevEmpty.style.display = 'flex';
+  }
+}
+
+function focusTerminal() {
+  const frame = document.getElementById('terminal-frame');
+  const hint = document.getElementById('focus-hint');
+  try { frame.contentWindow?.postMessage({ type: 'focus' }, '*'); } catch(e) {}
+  frame.focus();
+  setTimeout(() => { if (hint) hint.style.display = 'none'; }, 300);
+}
+
+document.getElementById('focus-hint').addEventListener('click', focusTerminal);
+
+function openNewTab(which) {
+  const url = which === 'terminal' ? terminalUrl : previewUrl;
+  if (url) window.open(url, '_blank');
+}
+
+// ── Resizable divider ──────────────────────────────────────
+(function() {
+  const divider = document.getElementById('divider');
+  const left = document.getElementById('left-panel');
+  const right = document.getElementById('right-panel');
+  const split = document.getElementById('split');
+  let dragging = false, startX = 0, startLeftW = 0;
+
+  divider.addEventListener('mousedown', e => {
+    dragging = true;
+    startX = e.clientX;
+    startLeftW = left.getBoundingClientRect().width;
+    divider.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = 'none');
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const totalW = split.getBoundingClientRect().width - 5;
+    const newLeftW = Math.min(Math.max(startLeftW + (e.clientX - startX), 200), totalW - 200);
+    left.style.flex = '0 0 ' + (newLeftW / totalW * 100).toFixed(1) + '%';
+    right.style.flex = '0 0 ' + (100 - newLeftW / totalW * 100).toFixed(1) + '%';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = '');
+  });
+})();
+
+// ── Init ───────────────────────────────────────────────────
+checkAuth();
+setInterval(loadSessions, 30000);
+
+
+function copyCmd(el) {
+  var text = el.textContent || el.innerText;
+  var btn = null;
+  if (el.tagName === 'PRE') btn = el.nextElementSibling;
+  var origText = btn ? btn.textContent : el.textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    if (btn) { btn.textContent = 'Copied!'; btn.classList.add('copied'); }
+    setTimeout(function() {
+      if (btn) { btn.textContent = 'Copy'; btn.classList.remove('copied'); }
+    }, 1500);
+  });
+}
+
+</script>
+</body>
+</html>
